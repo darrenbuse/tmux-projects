@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+# Husky pre-commit hook: shellcheck the two scripts.
+# New clones must run `npm install` to enable git hooks.
+
+set -e
+
+if command -v shellcheck &> /dev/null; then
+    shellcheck proj.sh tmux-projects.tmux
+else
+    echo "⚠️  shellcheck not found, skipping. Install with: brew install shellcheck"
+fi

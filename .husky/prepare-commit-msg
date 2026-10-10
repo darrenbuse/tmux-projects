@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+# Husky prepare-commit-msg hook
+# Runs commitizen for interactive conventional commit message creation
+
+# Only run for regular commits (not merge, squash, amend, etc.)
+# $2 will be empty for regular commits
+if [ -z "$2" ]; then
+    # Check if commitizen is available globally
+    if command -v git-cz &> /dev/null; then
+        exec < /dev/tty && git-cz --hook || true
+    else
+        echo "⚠️  commitizen (git-cz) not found"
+        echo "   Install with: npm install -g commitizen cz-conventional-changelog"
+        echo "   Falling back to standard commit message..."
+    fi
+fi
