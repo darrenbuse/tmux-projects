@@ -8,10 +8,11 @@
 #   area       flip to the other area, its last project or a Misc made on arrival
 #   bar        rebuild row 1, the project list, for every session
 #   goto <n>   switch to the nth project of the current area, numbered by name
-#   here       switch to, or create, the project for this pane's repo
 #   new        create a project, its shell starting in the area's directory
-#   pick       choose from the area's directories that have no project yet
-#   move-pick  choose which project this window moves to, Misc included
+#   pick       choose a repo in the area's directory and make its project, the
+#              cursor on this pane's repo, or type a name the list does not have
+#   move-pick  choose where this window goes: the area's projects, then the repos
+#              with no project yet, the cursor on this pane's repo
 #   nav        drive the two status rows with hjkl, Escape putting back the start
 #              enter <row> [step] - which row the cursor starts on, and one step
 #   rename     rename this project, prompting from the window or directory
@@ -282,48 +283,18 @@ goto() {
 # differs per worktree, so one repo would become one project per worktree, and
 # worktrees are how parallel agents run. Common-dir is shared, so they all land
 # together. Inside a submodule, climb to the superproject.
-repo_name() {
+repo_root() {
 	dir=$1
 	sup=$(cd "$dir" 2>/dev/null && git rev-parse --show-superproject-working-tree 2>/dev/null)
 	[ -n "$sup" ] && dir=$sup
 	common=$(cd "$dir" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 	[ -n "$common" ] || return 1
-	basename "$(dirname "$common")"
+	dirname "$common"
 }
 
-here() {
-	self=$(cur_session)
-	case $self in
-	*/*) ;;
-	*)
-		msg "session '$self' has no area - rename it first, eg: tmux rename-session personal/misc"
-		return 0
-		;;
-	esac
-	area=${self%%/*}
-	path=$(pane_path)
-
-	# Not in a repo at all - a home directory, /tmp, an ssh window - still needs
-	# somewhere to live, or the window is unreachable by number.
-	if ! name=$(repo_name "$path"); then
-		goto_misc "$area"
-		return 0
-	fi
-	target="$area/$name"
-
-	# Once every window is sorted, c resolves to where you already are. Say so,
-	# rather than switching to the current session and looking like a dead key.
-	if [ "$target" = "$self" ]; then
-		msg "already in $self"
-		return 0
-	fi
-
-	if tmux has-session -t "=$target" 2>/dev/null; then
-		switch_to "$target"
-	else
-		tmux new-session -d -s "$target" -c "$path"
-		switch_to "$target"
-	fi
+repo_name() {
+	root=$(repo_root "$1") || return 1
+	basename "$root"
 }
 
 # Window names carry spaces and whatever else was typed; session names are targets,
@@ -398,8 +369,9 @@ new_prompt() {
 	tmux command-prompt -p "new ${self%%/*}/" "run-shell \"$SELF new '%%'\""
 }
 
-# The shell starts in the area's directory, or in the project's own directory when
-# one already exists there - the usual case, where the repo was cloned first.
+# The shell starts in the directory given, else in the project's own directory
+# under the area when one exists there - the usual case, where the repo was cloned
+# first - else in the area's directory.
 new_project() {
 	self=$(cur_session)
 	area=${self%%/*}
@@ -411,20 +383,24 @@ new_project() {
 		switch_to "$target"
 		return 0
 	fi
-	dir=$(area_dir "$area")
-	[ -d "$dir/$name" ] && dir="$dir/$name"
+	dir=$2
+	if [ -z "$dir" ]; then
+		dir=$(area_dir "$area")
+		[ -d "$dir/$name" ] && dir="$dir/$name"
+	fi
 	tmux new-session -d -s "$target" -c "$dir"
 	switch_to "$target"
 }
 
-# Directories in the area with no project behind them yet. A worktree resolves to
-# its parent repo: repo_name folds worktrees together, so a project named after one
-# is somewhere C-a p c could never take you. A worktree's .git is a file whose
-# gitdir: line names the parent, so telling them apart costs no git call.
-candidates() {
+# Repos in the area's directory, name order. A directory with no .git is left off.
+# A worktree resolves to its parent repo: repo_root folds worktrees together, so a
+# project named after one is somewhere the pane's repo could never be. A worktree's
+# .git is a file whose gitdir: line names the parent, so telling them apart costs
+# no git call.
+repos() {
 	dir=$(area_dir "$1")
 	for path in "$dir"/*/; do
-		[ -d "$path" ] || continue
+		[ -e "$path.git" ] || continue
 		name=$(basename "$path")
 		if [ -f "$path.git" ]; then
 			gitdir=$(sed -n 's/^gitdir: //p' "$path.git")
@@ -434,12 +410,28 @@ candidates() {
 		fi
 		slug "$name"
 		echo
-	done | sort -u |
+	done | sort -u
+}
+
+# Repos with no project behind them yet.
+candidates() {
+	repos "$1" |
 		grep -vxF -f <(tmux list-sessions -F '#{session_name}' 2>/dev/null | sed -n "s|^$1/||p")
 }
 
-# Two stages. This one runs in a pane, where the session and the client are known
-# rather than guessed, and hands both to the popup, which has neither.
+# A list with the given name first, so the fzf cursor starts on it, and once only.
+# Given nothing, the list as it came.
+hoist() {
+	if [ -n "$1" ]; then
+		printf '%s\n' "$1"
+		grep -vxF "$1"
+	else
+		cat
+	fi
+}
+
+# Two stages. This one runs in a pane, where the session, the client and the pane's
+# repo are known rather than guessed, and hands them to the popup, which has none.
 pick() {
 	self=$(cur_session)
 	case $self in
@@ -449,31 +441,39 @@ pick() {
 		return 0
 		;;
 	esac
-	area=${self%%/*}
-	if [ -z "$(candidates "$area")" ]; then
-		msg "every directory in $(area_dir "$area") already has a project"
-		return 0
-	fi
 	tmux display-popup -E -w 50% -h 50% \
 		-e "TMUX_SESSION=$self" \
 		-e "TMUX_CLIENT=$(tmux display-message -p -t "${TMUX_PANE:-}" '#{client_name}')" \
+		-e "TMUX_REPO=$(repo_root "$(pane_path)")" \
 		"$SELF pick-fzf"
 }
 
 # Inside the popup. The list is rebuilt rather than passed through a file: it is one
-# stat per directory, and a stale list would offer a project made while it was open.
+# stat per directory, and a stale list would miss a repo cloned while it was open.
+# The pane's repo goes first, whether or not it is under the area, so Enter makes
+# its project rooted where the pane is. --print-query puts the typed text on line 1
+# and the pick, if any, on line 2, and Enter on no match exits 1 rather than 0, so a
+# name the list does not have becomes the project. Escape exits 130 and makes
+# nothing.
 pick_fzf() {
 	area=$(cur_session)
 	area=${area%%/*}
-	name=$(candidates "$area" | fzf --reverse --no-multi --prompt "new $area/") || return 0
+	pane=
+	[ -n "$TMUX_REPO" ] && pane=$(slug "$(basename "$TMUX_REPO")")
+	out=$(repos "$area" | hoist "$pane" | fzf --reverse --no-multi --print-query --prompt "project $area/")
+	case $? in 0 | 1) ;; *) return 0 ;; esac
+	name=$(sed -n '2p' <<<"$out")
+	[ -n "$name" ] || name=$(sed -n '1p' <<<"$out")
 	[ -n "$name" ] || return 0
-	new_project "$name"
+	root=
+	[ "$(slug "$name")" = "$pane" ] && root=$TMUX_REPO
+	new_project "$name" "$root"
 }
 
-# Where this window could go: the area's projects bar the one it is in, Misc first
-# whether or not a session stands behind it yet - the same always-there rule the bar
-# draws slot 1 by. This offers what exists, where C-a p N offers what does not, so a
-# directory with no project yet is not on the list and C-a p m still types a name.
+# Where this window could go among the projects that stand: the area's bar the one
+# it is in, Misc first whether or not a session stands behind it yet - the same
+# always-there rule the bar draws slot 1 by. move_pick_fzf adds the repos with no
+# project yet after these.
 move_targets() {
 	area=${1%%/*}
 	[ "$1" = "$area/$MISC" ] || echo "$MISC"
@@ -481,7 +481,8 @@ move_targets() {
 }
 
 # Two stages, as pick is: this half runs in a pane and hands the popup the session,
-# the client and the window, none of which a popup can work out for itself.
+# the client, the window and the pane's repo, none of which a popup can work out
+# for itself.
 move_pick() {
 	self=$(cur_session)
 	case $self in
@@ -491,22 +492,28 @@ move_pick() {
 		return 0
 		;;
 	esac
-	if [ -z "$(move_targets "$self")" ]; then
-		msg "no other project in ${self%%/*} to move to"
-		return 0
-	fi
 	tmux display-popup -E -w 50% -h 50% \
 		-e "TMUX_SESSION=$self" \
 		-e "TMUX_CLIENT=$(tmux display-message -p -t "${TMUX_PANE:-}" '#{client_name}')" \
 		-e "TMUX_WINDOW=$(tmux display-message -p -t "${TMUX_PANE:-}" '#{window_id}')" \
+		-e "TMUX_REPO=$(repo_root "$(pane_path)")" \
 		"$SELF move-pick-fzf"
 }
 
 # Inside the popup. The list is rebuilt here rather than passed in, as pick does it,
-# so a project made while the popup was open is on it.
+# so a project made while the popup was open is on it. The pane's repo goes first,
+# unless it is the project the window is already in, and the typed text is read the
+# way pick_fzf reads it, so a name the list does not have makes the project.
 move_pick_fzf() {
 	self=$(cur_session)
-	name=$(move_targets "$self" | fzf --reverse --no-multi --prompt "move to ${self%%/*}/") || return 0
+	pane=
+	[ -n "$TMUX_REPO" ] && pane=$(slug "$(basename "$TMUX_REPO")")
+	[ "$pane" = "${self#*/}" ] && pane=
+	out=$({ move_targets "$self"; candidates "${self%%/*}"; } | hoist "$pane" |
+		fzf --reverse --no-multi --print-query --prompt "move to ${self%%/*}/")
+	case $? in 0 | 1) ;; *) return 0 ;; esac
+	name=$(sed -n '2p' <<<"$out")
+	[ -n "$name" ] || name=$(sed -n '1p' <<<"$out")
 	[ -n "$name" ] || return 0
 	move "$name"
 }
@@ -692,9 +699,11 @@ move() {
 		fi
 		# new-session insists on a window, so make one, move ours in beside it, and
 		# only then kill it - killing the last window would take the session too.
-		# -c roots the new project at the window being spun out, not at wherever
-		# tmux happened to default to.
-		dir=$(tmux display-message -p -t "$win" '#{pane_current_path}')
+		# -c roots the new project at its repo under the area when there is one,
+		# else at the window being spun out, not at wherever tmux happened to
+		# default to.
+		dir=$(area_dir "$area")/$name
+		[ -d "$dir" ] || dir=$(tmux display-message -p -t "$win" '#{pane_current_path}')
 		spare=$(tmux new-session -d -P -F '#{window_id}' -s "$target" -c "$dir")
 		tmux move-window -s "$win" -t "=$target:"
 		tmux kill-window -t "$spare"
@@ -707,7 +716,6 @@ start) start ;;
 area) area_flip ;;
 bar) bar ;;
 goto) goto "$2" ;;
-here) here ;;
 new-prompt) new_prompt ;;
 new) new_project "$2" ;;
 pick) pick ;;

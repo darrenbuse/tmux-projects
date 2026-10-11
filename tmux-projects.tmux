@@ -73,25 +73,29 @@ tmux bind -T project Tab switch-client -l
 # or makes that area's Misc when nothing stands - so a work area you closed at the end
 # of the day is one key away the next morning.
 tmux bind -T project a run-shell "$CURRENT_DIR/proj.sh area"
-tmux bind -T project c run-shell "$CURRENT_DIR/proj.sh here"
-# n starts a project from nothing, its shell in ~/Projects/personal or
-# ~/Projects/MnS depending on the area you press it from.
-tmux bind -T project n run-shell -b "$CURRENT_DIR/proj.sh new-prompt"
-# N picks instead of typing: an fzf popup listing the area's directories that have
-# no project yet, so the fifty-odd under work stay one filter away. Worktrees are
-# folded into their repo, the way C-a p c already folds them.
-tmux bind -T project N run-shell -b "$CURRENT_DIR/proj.sh pick"
-# , renames this project, the key C-a , renames a window with, one level up.
-# m spins the current window out into another project. Both prompt, prefilled with
-# the window name, so the name stays yours to edit. -b matters: run-shell blocks the
-# command queue, and these scripts open a prompt of their own, which cannot be
-# processed while the queue is held.
+# , renames this project, the key C-a , renames a window with, one level up. -b
+# matters here and below: run-shell blocks the command queue, and these scripts
+# open a prompt or a popup of their own, which cannot be processed while the queue
+# is held.
 tmux bind -T project , run-shell -b "$CURRENT_DIR/proj.sh rename-prompt"
-tmux bind -T project m run-shell -b "$CURRENT_DIR/proj.sh move-prompt"
-# M picks the destination instead of typing it: an fzf popup of the area's projects,
-# Misc among them whether or not a session stands behind it yet. m still makes a
-# project that is not there yet; M only offers the ones that are.
-tmux bind -T project M run-shell -b "$CURRENT_DIR/proj.sh move-pick"
+# c creates a project and m moves this window to one. Each has a lowercase key
+# and an uppercase key. Lowercase picks from an fzf popup, with the cursor on the
+# repo this pane is in, and a name that matches nothing is taken as new. Uppercase
+# types the name at a prompt and needs no fzf.
+#
+# c lists the repos in the area's directory, so the fifty-odd under work stay one
+# filter away; worktrees are folded into their repo. The pick gets a project with a
+# window open at that repo, or a switch when it already has one. C types the name,
+# and the shell starts in ~/Projects/personal or ~/Projects/MnS depending on the
+# area you press it from.
+tmux bind -T project c run-shell -b "$CURRENT_DIR/proj.sh pick"
+tmux bind -T project C run-shell -b "$CURRENT_DIR/proj.sh new-prompt"
+# m lists the area's projects, Misc among them whether or not a session stands
+# behind it yet, then the repos with no project yet, which get one as the window
+# moves in. M types the destination, prefilled with the window name, so the name
+# stays yours to edit.
+tmux bind -T project m run-shell -b "$CURRENT_DIR/proj.sh move-pick"
+tmux bind -T project M run-shell -b "$CURRENT_DIR/proj.sh move-prompt"
 
 # h/j/k/l drive the bar itself. h and l step along a row, j drops to the window row
 # and k rises to the project row, and a step really switches rather than moving a
